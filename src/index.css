@@ -1,0 +1,32 @@
+/* (File src/index.css) */
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  
+  /* (BƯỚC 15.2) Nền đen, ẩn thanh cuộn */
+  background-color: #000;
+  overflow: hidden;
+}
+
+.app-container {
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.video-player {
+  /* (BƯỚC 15.2) Style cho "Màn hình" Tivi */
+  width: 100%;
+  height: 100%;
+  object-fit: contain; /* 'contain' (Giữ tỷ lệ, có thể có viền đen) 
+    'cover' (Phóng to lấp đầy, có thể mất mép)
+    Chúng ta dùng 'contain' cho 'Viewer' để xem được toàn bộ 
+  */
+  background-color: #111; /* Nền xám tối nếu video chưa có */
+}
