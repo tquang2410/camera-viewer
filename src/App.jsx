@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import { io } from 'socket.io-client';
-// (BƯỚC 18) 1. Import "vũ khí"
 import Peer from 'simple-peer'; 
 import './App.css'; 
 
-const SERVER_URL = 'http://localhost:4000';
+const SERVER_URL = 'https://fromutome-server.onrender.com';
+// (BƯỚC 22) 10 phút (tính bằng mili-giây)
+const RECORDING_INTERVAL_MS = 10 * 60 * 1000; 
 
 function App() {
   const [cameraID, setCameraID] = useState('');
@@ -12,57 +13,146 @@ function App() {
   const [statusText, setStatusText] = useState('Chờ kết nối...');
   const [isConnected, setIsConnected] = useState(false);
   
+  // (BƯỚC 22) State MỚI cho Ghi hình
+  const [isRecording, setIsRecording] = useState(false);
+  
   const socketRef = useRef(null);
   const videoRef = useRef(null);
-  // (BƯỚC 18) 2. Ref MỚI để lưu kết nối P2P
   const peerRef = useRef(null); 
   const isInitialized = useRef(false);
   
-  // (BƯỚC 18) 3. Hàm MỚI: Chủ động tạo cuộc gọi P2P
-  const initiateWebRTC = (streamerSocketId) => {
-    console.log(`(Viewer) Bắt đầu WebRTC... Gọi tới Streamer ID: ${streamerSocketId}`);
-    
-    const peer = new Peer({
-      initiator: true, // Viewer là người gọi
-      trickle: true,
+  // (BƯỚC 22) Ref MỚI để lưu trữ logic Ghi hình
+  const streamRef = useRef(null); // Lưu luồng (stream) video
+  const mediaRecorderRef = useRef(null); // Lưu 'MediaRecorder'
+  const recordedChunksRef = useRef([]); // Lưu "cục" (chunk) video (RAM)
+  const recordingIntervalRef = useRef(null); // Lưu 'setInterval' (10 phút)
+
+  // (BƯỚC 22) HÀM MỚI: "Tải về" (Download) file
+  const downloadFile = () => {
+    const blob = new Blob(recordedChunksRef.current, {
+      type: 'video/webm' // (Như đã thống nhất)
     });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    document.body.appendChild(a);
+    a.style = 'display: none';
+    a.href = url;
+    // Tên file (VD: 2025-11-02T10-30-05.webm)
+    a.download = `frometou_recording_${new Date().toISOString().slice(0, 19).replace('T', '_').replace(/:/g, '-')}.webm`;
+    a.click();
+    window.URL.revokeObjectURL(url);
+    document.body.removeChild(a);
     
+    // Xóa "cục" (chunk) video (RAM)
+    recordedChunksRef.current = [];
+  };
+
+  // (BƯỚC 22) HÀM MỚI: Chạy khi 10 phút trôi qua
+  const handleChunkSave = () => {
+    console.log('(Recorder) 10 phút! Đang lưu "cục" (chunk)...');
+    if (mediaRecorderRef.current) {
+      // 1. Dừng (stop) (để kích hoạt 'onstop' -> 'downloadFile')
+      mediaRecorderRef.current.stop();
+      // 2. Bắt đầu lại (start) (để ghi 10 phút tiếp theo)
+      mediaRecorderRef.current.start(); 
+    }
+  };
+
+  // (BƯỚC 22) HÀM MỚI: Chạy khi nhấn "Bắt đầu Ghi"
+  const handleStartRecording = () => {
+    if (!streamRef.current) {
+      console.error('Lỗi Ghi hình: Không tìm thấy luồng (stream) video!');
+      return;
+    }
+    
+    console.log('(Recorder) Bắt đầu Ghi...');
+    setIsRecording(true);
+    recordedChunksRef.current = []; // Xóa (clear) RAM
+    
+    // 1. Khởi tạo (Initialize) MediaRecorder
+    mediaRecorderRef.current = new MediaRecorder(streamRef.current, {
+      mimeType: 'video/webm'
+    });
+
+    // 2. Lắng nghe (Listen) dữ liệu (Data)
+    mediaRecorderRef.current.ondataavailable = (event) => {
+      if (event.data.size > 0) {
+        recordedChunksRef.current.push(event.data);
+      }
+    };
+
+    // 3. Lắng nghe (Listen) "Dừng" (Stop)
+    mediaRecorderRef.current.onstop = () => {
+      console.log('(Recorder) Đã dừng. Đang Tải về (Downloading)...');
+      downloadFile(); // Gọi hàm "Tải về"
+    };
+    
+    // 4. Bắt đầu (Start) Ghi
+    mediaRecorderRef.current.start(); // Bắt đầu Ghi
+
+    // 5. Bắt đầu "Đồng hồ 10 phút" (10-min Timer)
+    recordingIntervalRef.current = setInterval(
+      handleChunkSave, 
+      RECORDING_INTERVAL_MS
+    );
+  };
+
+  // (BƯỚC 22) HÀM MỚI: Chạy khi nhấn "Dừng Ghi"
+  const handleStopRecording = () => {
+    console.log('(Recorder) Người dùng nhấn Dừng Ghi.');
+    setIsRecording(false);
+    
+    // 1. Dừng "Đồng hồ 10 phút" (10-min Timer)
+    clearInterval(recordingIntervalRef.current);
+    recordingIntervalRef.current = null;
+
+    // 2. Dừng (Stop) Ghi (sẽ kích hoạt 'onstop' -> 'downloadFile')
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+      mediaRecorderRef.current.stop();
+    }
+  };
+
+  // (BƯỚC 18) Hàm "Khởi tạo P2P" (Cập nhật)
+  const initiateWebRTC = (streamerSocketId) => {
+    console.log(`(Viewer) Bắt đầu WebRTC...`);
+    const peer = new Peer({ initiator: true, trickle: true });
     peerRef.current = peer;
 
-    // (A) Khi 'simple-peer' TẠO ra "Tín hiệu" (Offer/ICE)
     peer.on('signal', (data) => {
-      // (BƯỚC 18) DÒNG LOG BẠN CHƯA THẤY ĐÂY RỒI:
-      console.log('(Viewer) TẠO TÍN HIỆU (Offer/ICE), đang gửi lên Server...');
+      console.log('(Viewer) TẠO TÍN HIỆU (Offer/ICE)...');
       socketRef.current.emit('webrtc-signal', {
         signalData: data,
         targetSocketId: streamerSocketId 
       });
     });
 
-    // (B) Khi 'simple-peer' NHẬN được Video Stream
+    // (BƯỚC 22) CẬP NHẬT: LƯU LUỒNG (STREAM)
     peer.on('stream', (stream) => {
       console.log('****** (Viewer) ĐÃ NHẬN ĐƯỢC VIDEO STREAM! ******');
       setStatusText('ĐANG XEM!');
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
       }
+      // (BƯỚC 22) 1. LƯU luồng (stream) vào 'streamRef'
+      streamRef.current = stream; 
     });
 
-    // (C) Xử lý lỗi P2P
     peer.on('error', (err) => {
       console.error('(Viewer) Lỗi WebRTC Peer:', err);
       setStatusText('Lỗi kết nối P2P.');
     });
-
-    // (D) Khi ngắt kết nối P2P
     peer.on('close', () => {
       console.log('(Viewer) Kết nối P2P đã đóng.');
       handleDisconnect();
     });
   };
 
-  // (BƯỚC 18) 4. Hàm "Dừng Xem" (hoàn chỉnh)
+  // (BƯỚC 18) Hàm "Dừng Xem" (Cập nhật)
   const handleDisconnect = () => {
+    if (isRecording) {
+      // (BƯỚC 22) Nếu đang Ghi -> Tự động Dừng Ghi
+      handleStopRecording();
+    }
     if (peerRef.current) {
       peerRef.current.destroy();
       peerRef.current = null;
@@ -75,10 +165,13 @@ function App() {
     if (videoRef.current) {
       videoRef.current.srcObject = null;
     }
+    // (BƯỚC 22) XÓA luồng (stream)
+    streamRef.current = null; 
   };
 
-  // (BƯỚC 18) 5. Hàm "Xem Stream" (hoàn chỉnh)
+  // (BƯỚC 18) Hàm "Xem Stream" (Không đổi)
   const handleConnect = () => {
+    // (Code kết nối, xác thực {id, pass}, giữ nguyên)
     const idToConnect = cameraID.trim();
     const passToConnect = password.trim();
     if (idToConnect === '' || passToConnect === '') {
@@ -87,10 +180,7 @@ function App() {
     }
     if (socketRef.current && socketRef.current.connected) return;
     setStatusText(`Đang kết nối tới ${SERVER_URL}...`);
-
     socketRef.current = io(SERVER_URL);
-
-    // Lắng nghe 'connect'
     socketRef.current.on('connect', () => {
       console.log(`(Viewer) Đã kết nối, ID: ${socketRef.current.id}`);
       socketRef.current.emit('request-stream', { 
@@ -99,19 +189,12 @@ function App() {
       });
       setStatusText(`Đang xác thực '${idToConnect}'...`);
     });
-
-    // (BƯỚC 18 - SỬA LỖI LỆCH PHA)
-    // 1. Lắng nghe 'password-valid' (ĐÚNG TÊN)
     socketRef.current.on('password-valid', (streamerSocketId) => {
       console.log(`(Viewer) Mật khẩu HỢP LỆ! Streamer ID là: ${streamerSocketId}`);
       setStatusText('Mật khẩu đúng! Đang bắt đầu WebRTC...');
       setIsConnected(true);
-      
-      // GỌI HÀM "CHỦ ĐỘNG"
       initiateWebRTC(streamerSocketId);
     });
-
-    // (BƯỚC 18) 2. Lắng nghe TÍN HIỆU (Answer/ICE) TỪ Streamer
     socketRef.current.on('webrtc-signal', ({ signalData }) => {
       console.log('(Viewer) NHẬN TÍN HIỆU (Answer/ICE) từ Server (do Streamer gửi)...');
       if (peerRef.current) {
@@ -119,7 +202,14 @@ function App() {
       }
     });
 
-    // (Lắng nghe lỗi - giữ nguyên)
+    // (BƯỚC 23) Lắng nghe (listen) nếu Streamer "Tắt app" (disconnect)
+    socketRef.current.on('streamer-disconnected', () => {
+      console.warn('(Viewer) Lỗi: Streamer (Máy quay) đã ngắt kết nối!');
+      setStatusText('Lỗi: Streamer (Máy quay) đã Offline.');
+      
+      // (BƯỚC 23) Gọi hàm "Dừng Xem" (để "dọn dẹp" (cleanup) P2P)
+      handleDisconnect();
+    });
     socketRef.current.on('password-invalid', () => {
       console.error('(Viewer) Lỗi: Mật khẩu SAI!');
       setStatusText('Lỗi: Sai Mật khẩu! Vui lòng thử lại.');
@@ -130,8 +220,6 @@ function App() {
       setStatusText('Lỗi: Không tìm thấy Mã Camera này!');
       socketRef.current.disconnect();
     });
-
-    // Lắng nghe 'disconnect' (chung)
     socketRef.current.on('disconnect', () => {
       setStatusText('Offline - Đã ngắt kết nối');
       console.log('(Viewer) Đã ngắt kết nối.');
@@ -140,6 +228,8 @@ function App() {
         peerRef.current.destroy();
         peerRef.current = null;
       }
+      // (BƯỚC 22) XÓA luồng (stream)
+      streamRef.current = null; 
     });
   };
 
@@ -154,13 +244,14 @@ function App() {
     };
   }, []);
   
-  // (Code JSX, giữ nguyên)
+  // (BƯỚC 22) Cập nhật JSX (thêm nút Ghi hình)
   return (
     <div className="app-container">
       <div className="connection-controls">
+        {/* (Input (ID) và Input (Pass) giữ nguyên) */}
         <input 
           type="text"
-          placeholder="Nhập Mã Camera (VD: 'Wang vip 13')"
+          placeholder="Nhập Mã Camera"
           value={cameraID}
           onChange={(e) => setCameraID(e.target.value)}
           disabled={isConnected} 
@@ -174,6 +265,8 @@ function App() {
           disabled={isConnected} 
           className="password-input" 
         />
+        
+        {/* (Nút 'Xem Stream' / 'Dừng Xem', giữ nguyên) */}
         {isConnected ? (
           <button onClick={handleDisconnect} className="disconnect-button">
             Dừng Xem
@@ -183,6 +276,23 @@ function App() {
             Xem Stream
           </button>
         )}
+        
+        {/* (BƯỚC 22) NÚT GHI HÌNH MỚI */}
+        {/* (Chỉ hiện khi ĐÃ kết nối) */}
+        {isConnected && (
+          isRecording ? (
+            // Nếu ĐANG Ghi -> Hiện nút Dừng (Đỏ)
+            <button onClick={handleStopRecording} className="stop-record-button">
+              Dừng Ghi (Stop)
+            </button>
+          ) : (
+            // Nếu CHƯA Ghi -> Hiện nút Bắt đầu (Xanh lá)
+            <button onClick={handleStartRecording} className="start-record-button">
+              Bắt đầu Ghi (Record)
+            </button>
+          )
+        )}
+        
         <p className="status-text">Trạng thái: {statusText}</p>
       </div>
       <video 
